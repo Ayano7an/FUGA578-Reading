@@ -8,6 +8,8 @@ import random
 import sqlite3
 from pathlib import Path
 
+
+
 # 简化版分词和词性标注（不依赖spaCy）
 def simple_tokenize(text):
     """简单分词：提取所有德语单词，保留大小写"""
@@ -68,6 +70,50 @@ def extract_readable_text(text, target_tokens, max_length=None):
                 best_segment = current_segment
     
     return best_segment.strip(), max_target_count
+
+# ============= 添加缓存管理类 (在 VocabManager 类之前) =============
+class TextCacheManager:
+    """管理文本缓存"""
+    
+    def __init__(self, cache_file='text_cache.txt'):
+        self.cache_file = cache_file
+    
+    def save_text(self, text):
+        """保存文本到缓存"""
+        try:
+            with open(self.cache_file, 'w', encoding='utf-8') as f:
+                f.write(text)
+            return True
+        except Exception as e:
+            st.error(f"保存缓存失败: {e}")
+            return False
+    
+    def load_text(self):
+        """从缓存加载文本"""
+        try:
+            if Path(self.cache_file).exists():
+                with open(self.cache_file, 'r', encoding='utf-8') as f:
+                    return f.read()
+            return None
+        except Exception as e:
+            st.error(f"加载缓存失败: {e}")
+            return None
+    
+    def clear_cache(self):
+        """清除缓存"""
+        try:
+            if Path(self.cache_file).exists():
+                Path(self.cache_file).unlink()
+            return True
+        except Exception as e:
+            st.error(f"清除缓存失败: {e}")
+            return False
+    
+    def has_cache(self):
+        """检查是否有缓存"""
+        return Path(self.cache_file).exists()
+
+
 
 # 数据管理类
 class VocabManager:
@@ -317,8 +363,13 @@ if 'current_book_id' not in st.session_state:
 
 rm = st.session_state.reading_manager
 
+if 'text_cache_manager' not in st.session_state:
+    st.session_state.text_cache_manager = TextCacheManager()
+
+tcm = st.session_state.text_cache_manager
+
 # Streamlit 界面
-st.title("- Little Fuga V Minor - 9 ")
+st.title("- Little Fuga 578-zehn ")
 st.set_page_config(
     page_title="Fuga Vocabs",
     page_icon="💿",
@@ -416,16 +467,54 @@ with tab1:
         st.info(f"📖 当前选中：**{current_title}**")
     
     
+        
+    st.subheader("📝 文本输入区域")
+
+    # 缓存状态和操作按钮
+    col1, col2, col3 = st.columns([2, 1, 1])
+
+    with col1:
+        if tcm.has_cache():
+            st.success("✅ 已保存上一次的文本缓存")
+        else:
+            st.info("💡 还未保存文本缓存")
+
+    with col2:
+        if tcm.has_cache():
+            if st.button("⏮️ 恢复上次文本", key="restore_cache"):
+                cached_text = tcm.load_text()
+                if cached_text:
+                    st.session_state.text_input_value = cached_text
+                    st.rerun()
+
+    with col3:
+        if tcm.has_cache():
+            if st.button("🗑️ 清除缓存", key="clear_cache"):
+                if tcm.clear_cache():
+                    st.success("✅ 缓存已清除")
+                    st.rerun()
+
+    st.divider()
+
+    # 文本输入框
     text_input = st.text_area(
         "粘贴或输入德语文本：",
+        value=st.session_state.get('text_input_value', ''),
         height=300,
         placeholder="例如：Ich gehe heute in die Schule. Das Wetter ist sehr schön..."
     )
-    
+
+
     buffer_size = st.number_input("每次加载生词数量：", min_value=10, max_value=200, value=50)
-    
+   
+    # 在开头添加保存缓存的逻辑：
     if st.button("🔄 处理文本", type="primary"):
         if text_input:
+            # 保存文本到缓存
+            tcm.save_text(text_input)
+            st.session_state.text_input_value = text_input
+            expired = vm.clean_expired_words(days=3)
+
             # 检查是否选了书籍
             if not st.session_state.current_book_id:
                 st.error("❌ 请先选择或创建一本书籍")
@@ -572,7 +661,7 @@ with tab3:
         st.subheader("📤 步骤1：导出生词表")
         
         # 🆕 自动生成带提示词的内容
-        llm_prompt = "请给出下列德文单词的翻译，格式为(Deutsch, 中文翻译)。\n\n"
+        llm_prompt = "请给出下列德文单词的翻译，格式为 Deutsch, 中文翻译 \n 每個單詞一行\n"
         word_list_text = "\n".join(learning_words.keys())
         full_text_with_prompt = llm_prompt + word_list_text
         
@@ -583,7 +672,7 @@ with tab3:
                 "单词列表（复制后粘贴给AI翻译）：", 
                 full_text_with_prompt, 
                 height=200,
-                disabled=True  # 设为只读，防止用户误改
+                disabled=False  # 不要設置只讀，因為這樣用戶連復製都不行
             )
         with col2:
             # 下载选项：同时下载提示词和单词列表
@@ -732,7 +821,7 @@ with tab4:
             st.divider()
             
             # 操作按钮
-            col1, col2, col3 = st.columns(3)
+            col1, col2 = st.columns(2)
             
             with col1:
                 if st.button("✅ 认识 → 熟词表", use_container_width=True, type="primary"):
@@ -745,11 +834,7 @@ with tab4:
                     st.session_state.review_index += 1
                     st.rerun()
             
-            with col3:
-                if st.button("🔄 重新开始", use_container_width=True):
-                    st.session_state.review_index = 0
-                    random.shuffle(st.session_state.review_words)
-                    st.rerun()
+
             
             # 进度条
             progress = st.session_state.review_index / len(st.session_state.review_words)
